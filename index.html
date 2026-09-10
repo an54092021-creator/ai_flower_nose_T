@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>벚꽃 잡기 놀이 - 코로 벚꽃을 잡아라!</title>
+    <!-- MediaPipe Face Mesh 및 카메라 유틸리티 스크립트 -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #ffe6ea;
+            font-family: 'Malgun Gothic', sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        #game-container {
+            position: relative;
+            width: 640px;
+            height: 480px;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+            background: #000;
+        }
+
+        /* 웹캠 영상 (좌우 반전 처리) */
+        video {
+            display: none;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1); 
+        }
+
+        /* UI 오버레이 패널 */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+
+        .header-board {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.85);
+            padding: 10px 20px;
+            border-radius: 30px;
+            font-size: 20px;
+            font-weight: bold;
+            color: #d81b60;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+        }
+
+        /* 시작 화면 모달 */
+        #start-screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 240, 245, 0.95);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 10;
+            text-align: center;
+            padding: 20px;
+        }
+
+        #start-screen h1 {
+            color: #d81b60;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+
+        #start-screen p {
+            color: #555;
+            font-size: 16px;
+            line-height: 1.5;
+            margin-bottom: 25px;
+        }
+
+        .btn {
+            background-color: #ff4081;
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            font-size: 18px;
+            font-weight: bold;
+            border-radius: 30px;
+            cursor: pointer;
+            box-shadow: 0 4px 15px rgba(255, 64, 129, 0.4);
+            transition: 0.2s;
+            pointer-events: auto;
+        }
+
+        .btn:hover {
+            background-color: #e00065;
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <!-- 웹캠용 비디오 엘리먼트 -->
+        <video id="webcam" playsinline></video>
+        <!-- 그래픽 렌더링 캔버스 -->
+        <canvas id="output_canvas" width="640" height="480"></canvas>
+
+        <!-- 게임 UI -->
+        <div id="ui-layer">
+            <div class="header-board">
+                <span id="score-board">점수: 0점</span>
+                <span id="timer-board">남은 시간: 30초</span>
+            </div>
+        </div>
+
+        <!-- 시작/종료 화면 -->
+        <div id="start-screen">
+            <h1>🌸 벚꽃 잡기 놀이 🌸</h1>
+            <p>웹캠을 향해 서주세요!<br>머리 위에서 떨어지는 벚꽃잎을 오직 <b>'코'</b>로 맞추면 점수가 올라갑니다.<br>30초 동안 가장 많은 벚꽃잎을 모아보세요!</p>
+            <button class="btn" id="start-btn" onclick="startGame()">게임 시작하기</button>
+        </div>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const scoreBoard = document.getElementById('score-board');
+        const timerBoard = document.getElementById('timer-board');
+        const startScreen = document.getElementById('start-screen');
+        const startBtn = document.getElementById('start-btn');
+
+        let score = 0;
+        let timeLeft = 30;
+        let gameRunning = false;
+        let timerInterval;
+
+        // 코 위치 저장 변수 (화면 좌표계 0~640, 0~480)
+        let nosePos = { x: -100, y: -100 };
+
+        // 벚꽃잎 객체 리스트
+        let petals = [];
+
+        class Petal {
+            constructor() {
+                this.reset();
+            }
+            reset() {
+                this.x = Math.random() * canvasElement.width;
+                this.y = -40;
+                this.size = Math.random() * 12 + 22; // 벚꽃 크기
+                
+                // [수정된 부분]: 기존 속도(2~4.5)에서 2배 빠른 (4~9)로 상향 조정
+                this.speed = Math.random() * 5 + 4;   
+                
+                this.swing = Math.random() * 2 - 1;   // 좌우 흔들림
+                this.angle = Math.random() * Math.PI * 2; // 회전 각도
+                this.spin = Math.random() * 0.05 - 0.025; // 회전 속도
+                this.opacity = Math.random() * 0.2 + 0.8;
+            }
+            update() {
+                this.y += this.speed;
+                this.x += Math.sin(this.y / 35) * this.swing;
+                this.angle += this.spin; // 벚꽃잎이 살랑살랑 회전하는 효과
+
+                // 바닥을 벗어나면 다시 위에서 리셋
+                if (this.y > canvasElement.height + 40) {
+                    this.reset();
+                }
+            }
+            draw() {
+                canvasCtx.save();
+                canvasCtx.translate(this.x, this.y);
+                canvasCtx.rotate(this.angle); // 회전 적용
+                canvasCtx.globalAlpha = this.opacity;
+                canvasCtx.font = `${this.size}px sans-serif`;
+                canvasCtx.textAlign = 'center';
+                canvasCtx.textBaseline = 'middle';
+                canvasCtx.fillText('🌸', 0, 0);
+                canvasCtx.restore();
+            }
+        }
+
+        // 벚꽃잎 12개 생성
+        for (let i = 0; i < 12; i++) {
+            petals.push(new Petal());
+        }
+
+        // MediaPipe Face Mesh 설정
+        const faceMesh = new FaceMesh({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`
+        });
+
+        faceMesh.setOptions({
+            maxNumFaces: 1,
+            refineLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+
+        faceMesh.onResults(onResults);
+
+        // 얼굴 인식 결과 처리 콜백
+        function onResults(results) {
+            // 배경 비디오 그리기
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            canvasCtx.drawImage(results.image, 0, 0, canvasElement.width, canvasElement.height);
+
+            if (results.multiFaceLandmarks && results.multiFaceLandmarks.length > 0) {
+                const landmarks = results.multiFaceLandmarks[0];
+                
+                // MediaPipe Face Mesh 코 끝 정중앙 랜드마크 (4번)
+                const nose = landmarks[4];
+                
+                // 코 좌표 계산 (거울 모드 일치)
+                nosePos.x = nose.x * canvasElement.width;
+                nosePos.y = nose.y * canvasElement.height;
+
+                // 디버깅용: 코 위치에 작은 분홍색 포인트 표시
+                canvasCtx.fillStyle = '#ff0055';
+                canvasCtx.beginPath();
+                canvasCtx.arc(nosePos.x, nosePos.y, 8, 0, 2 * Math.PI);
+                canvasCtx.fill();
+            } else {
+                nosePos.x = -100;
+                nosePos.y = -100;
+            }
+
+            // 게임이 시작 상태일 때만 벚꽃잎 로직 및 충돌 체크 실행
+            if (gameRunning) {
+                for (let petal of petals) {
+                    petal.update();
+                    petal.draw();
+
+                    // [충돌 규칙]: 벚꽃잎 위치와 코의 위치 거리가 일정 반경 이내이면 획득!
+                    let dist = Math.hypot(petal.x - nosePos.x, petal.y - nosePos.y);
+                    if (dist < 35) { // 코에 닿았을 때의 판정 거리
+                        score += 1;
+                        scoreBoard.innerText = `점수: ${score}점`;
+                        petal.reset(); // 먹은 벚꽃잎은 위로 재배치
+                    }
+                }
+            }
+
+            canvasCtx.restore();
+        }
+
+        // 웹캠 연결 시작
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await faceMesh.send({ image: videoElement });
+            },
+            width: 640,
+            height: 480
+        });
+        camera.start();
+
+        // 게임 시작 함수
+        function startGame() {
+            score = 0;
+            timeLeft = 30;
+            scoreBoard.innerText = `점수: ${score}점`;
+            timerBoard.innerText = `남은 시간: ${timeLeft}초`;
+            startScreen.style.display = 'none';
+            gameRunning = true;
+
+            // 기존 타이머 클리어 후 재시작
+            if (timerInterval) clearInterval(timerInterval);
+
+            timerInterval = setInterval(() => {
+                timeLeft--;
+                timerBoard.innerText = `남은 시간: ${timeLeft}초`;
+
+                if (timeLeft <= 0) {
+                    clearInterval(timerInterval);
+                    gameRunning = false;
+                    
+                    // 결과 화면 표시
+                    startScreen.style.display = 'flex';
+                    document.querySelector('#start-screen h1').innerText = '🎉 게임 종료! 🎉';
+                    document.querySelector('#start-screen p').innerHTML = `수고하셨습니다!<br>당신이 코로 잡은 벚꽃잎은 총 <b>${score}개</b>입니다!`;
+                    startBtn.innerText = '다시 하기';
+                }
+            }, 1000);
+        }
+    </script>
+</body>
+</html>
